@@ -1,0 +1,25 @@
+# Security gate waivers. Every entry is a time-boxed, owned, approved exception.
+# Rules enforced by security/scripts/check_waivers.py (runs on every PR + daily cron):
+#  - required fields present; id unique
+#  - expires <= created + 90 days (30 for CRITICAL)
+#  - approved_by != requested_by, and approver in the platform-team list
+#  - expired waiver => gate fails again (no silent permanence)
+#  - scanner: trivy | checkov | kyverno ; gitleaks is NOT waivable (rotate the secret)
+# Changes to this file require CODEOWNERS (@platform-team) approval.
+
+waivers:
+  - id: WVR-0001
+    scanner: trivy
+    target: CVE-2026-12345          # example: glibc in distroless base
+    package: libc6
+    severity: HIGH
+    reason: >-
+      No fixed version upstream. Vulnerable code path (iconv) not reachable:
+      service never calls iconv; distroless has no shell.
+    compensating_control: Falco rule 'Unexpected process in accounts-api' + base image rebuild weekly
+    threat: T2
+    requested_by: alice
+    approved_by: bob
+    created: 2026-10-01
+    expires: 2026-12-30
+    ticket: SEC-101

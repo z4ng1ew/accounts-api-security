@@ -1,0 +1,6 @@
+# T4: the controls that gate everyone else need a second, specific approver.
+/.github/                 @org/platform-team
+/security/                @org/platform-team
+/policies/                @org/platform-team
+/terraform/               @org/platform-team
+/app/Dockerfile           @org/platform-team

@@ -1,0 +1,67 @@
+# Section 3: pipeline gates. Maps: T2 (Trivy), T3 (Gitleaks), T4 (waiver integrity), T7 (Checkov).
+name: security-gates
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  waivers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml pytest
+      - run: pytest -q security/scripts
+      - run: python security/scripts/check_waivers.py validate security/waivers/waivers.yaml
+
+  secrets:            # T3 — blocking, NOT waivable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+
+  vulns:              # T2 — blocking on fixable CRITICAL/HIGH, waivable
+    needs: waivers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml
+      - name: Generate .trivyignore from approved waivers only
+        run: python security/scripts/check_waivers.py trivyignore security/waivers/waivers.yaml > .trivyignore
+      - run: docker build -t accounts-api:${{ github.sha }} app/
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: accounts-api:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true      # unfixable => nothing actionable; tracked via SBOM instead
+          trivyignores: .trivyignore
+          exit-code: "1"
+
+  iac:                # T7 — Checkov on Terraform, blocking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          config_file: terraform/.checkov.yaml
+
+  policies:           # T5 — policy unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -sL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz | tar xz kyverno
+          ./kyverno test policies/kyverno/tests
+
+  sast:               # advisory only (deliberately non-blocking, see DECISIONS.md D5)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run semgrep --config p/default --error app/ || true

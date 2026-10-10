@@ -1,0 +1,27 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata: { name: accounts-api-policies }
+policies:
+  - ../require-pod-security.yaml
+  - ../disallow-latest-tag.yaml
+  - ../require-resources.yaml
+  - ../disallow-secret-literals.yaml
+resources:
+  - resources/pods.yaml
+results:
+  - { policy: require-pod-security, rule: no-privileged, resources: [good], kind: Pod, result: pass }
+  - { policy: require-pod-security, rule: no-privileged, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-pod-security, rule: run-as-non-root, resources: [good], kind: Pod, result: pass }
+  - { policy: require-pod-security, rule: run-as-non-root, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-pod-security, rule: no-host-namespaces, resources: [good], kind: Pod, result: pass }
+  - { policy: require-pod-security, rule: no-host-namespaces, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-pod-security, rule: no-hostpath, resources: [good], kind: Pod, result: pass }
+  - { policy: require-pod-security, rule: no-hostpath, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-pod-security, rule: no-privilege-escalation-readonly-root, resources: [good], kind: Pod, result: pass }
+  - { policy: require-pod-security, rule: no-privilege-escalation-readonly-root, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-image-digest, rule: require-digest, resources: [good], kind: Pod, result: pass }
+  - { policy: require-image-digest, rule: require-digest, resources: [bad], kind: Pod, result: fail }
+  - { policy: require-resources, rule: memory-limit-and-cpu-request, resources: [good], kind: Pod, result: pass }
+  - { policy: require-resources, rule: memory-limit-and-cpu-request, resources: [bad], kind: Pod, result: fail }
+  - { policy: disallow-secret-literals, rule: no-literal-secret-env, resources: [good], kind: Pod, result: pass }
+  - { policy: disallow-secret-literals, rule: no-literal-secret-env, resources: [bad], kind: Pod, result: fail }

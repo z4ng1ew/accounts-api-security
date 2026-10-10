@@ -1,0 +1,24 @@
+# T1/T4: only images signed keylessly by THIS repo's build-sign workflow on main may run in `accounts`.
+# Not part of `kyverno test` (needs network to Rekor/registry); validate in kind — see README.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata: { name: verify-image-signature }
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 15
+  failurePolicy: Fail
+  rules:
+    - name: cosign-keyless
+      match:
+        any: [{ resources: { kinds: [Pod], namespaces: [accounts] } }]
+      verifyImages:
+        - imageReferences: ["ghcr.io/z4ng1ew/accounts-api-security/*"]
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: "https://github.com/z4ng1ew/accounts-api-security/.github/workflows/build-sign.yml@refs/heads/main"
+                    rekor: { url: https://rekor.sigstore.dev }

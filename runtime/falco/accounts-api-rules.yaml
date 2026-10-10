@@ -1,0 +1,31 @@
+# Section 5 runtime detection. Detection only; prevention is admission (policies/).
+# AWS mapping: Falco ≈ GuardDuty EKS Runtime Monitoring; alerts → Falcosidekick → SNS/Slack.
+
+- macro: accounts_api_container
+  condition: (k8s.ns.name = "accounts" and k8s.pod.label.app = "accounts-api")
+
+- rule: Shell spawned in accounts-api            # T5 / waiver WVR-0001 compensating control
+  desc: Distroless image has no shell; any shell means exploitation or kubectl exec.
+  condition: spawned_process and accounts_api_container and proc.name in (sh, bash, ash, dash)
+  output: "Shell in accounts-api (user=%user.name cmd=%proc.cmdline pod=%k8s.pod.name)"
+  priority: CRITICAL
+  tags: [T5]
+
+- rule: Unexpected process in accounts-api
+  desc: Only the python interpreter should ever run.
+  condition: spawned_process and accounts_api_container and not proc.name in (python, python3)
+  output: "Unexpected process %proc.name in accounts-api (pod=%k8s.pod.name)"
+  priority: WARNING
+  tags: [T2, T5]
+
+- rule: Service account token read by non-app process   # T7
+  condition: open_read and accounts_api_container and fd.name startswith /var/run/secrets and not proc.name in (python, python3)
+  output: "SA/IRSA token read by %proc.name (pod=%k8s.pod.name)"
+  priority: CRITICAL
+  tags: [T7]
+
+- rule: IMDS access from accounts-api                   # T7: should use IRSA, never node role
+  condition: outbound and accounts_api_container and fd.sip = "169.254.169.254"
+  output: "accounts-api contacted IMDS (pod=%k8s.pod.name)"
+  priority: CRITICAL
+  tags: [T7]

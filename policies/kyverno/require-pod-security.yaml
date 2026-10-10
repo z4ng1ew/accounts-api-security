@@ -1,0 +1,62 @@
+# T5: container escape / lateral movement in the shared cluster.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-security
+  annotations:
+    policies.kyverno.io/description: "No privileged, root, host namespaces or hostPath. Threat T5."
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: no-privileged
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Privileged containers are not allowed (T5)."
+        pattern:
+          spec:
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+    - name: run-as-non-root
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Pods must set runAsNonRoot=true and must not run as UID 0 (T5)."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              =(runAsUser): ">0"
+            containers:
+              - =(securityContext):
+                  =(runAsUser): ">0"
+    - name: no-host-namespaces
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "hostNetwork/hostPID/hostIPC are not allowed (T5/T6)."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostPID): "false"
+            =(hostIPC): "false"
+    - name: no-hostpath
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "hostPath volumes are not allowed (T5)."
+        pattern:
+          spec:
+            =(volumes):
+              - X(hostPath): "null"
+    - name: no-privilege-escalation-readonly-root
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "allowPrivilegeEscalation=false and readOnlyRootFilesystem=true required (T5)."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: "false"
+                  readOnlyRootFilesystem: true

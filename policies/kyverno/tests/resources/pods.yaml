@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata: { name: good, namespace: accounts, labels: { app: accounts-api } }
+spec:
+  securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+  containers:
+    - name: api
+      image: ghcr.io/example/accounts-api@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, privileged: false }
+      envFrom: [{ secretRef: { name: accounts-api-db } }]
+      resources: { requests: { cpu: 100m }, limits: { memory: 256Mi } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: bad, namespace: accounts }
+spec:
+  hostNetwork: true
+  securityContext: { runAsNonRoot: false }
+  containers:
+    - name: api
+      image: ghcr.io/example/accounts-api:latest
+      securityContext: { privileged: true, runAsUser: 0 }
+      env:
+        - { name: DB_PASSWORD, value: hunter2-prod }
+  volumes:
+    - name: host
+      hostPath: { path: / }

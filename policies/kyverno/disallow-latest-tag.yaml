@@ -1,0 +1,16 @@
+# T1: images must be referenced by immutable digest.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata: { name: require-image-digest }
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-digest
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Images must be pinned by @sha256 digest, not by tag (T1)."
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"

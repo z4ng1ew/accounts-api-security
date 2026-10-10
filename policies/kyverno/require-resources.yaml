@@ -1,0 +1,18 @@
+# Not a named threat: shared-cluster availability (noisy neighbour). Built because 12 teams share nodes.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata: { name: require-resources }
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: memory-limit-and-cpu-request
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Containers need a memory limit and a CPU request."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests: { cpu: "?*" }
+                  limits: { memory: "?*" }

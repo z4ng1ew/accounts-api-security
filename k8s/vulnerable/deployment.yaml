@@ -1,0 +1,30 @@
+# Section 4 "before": representative insecure spec as inherited. See k8s/FINDINGS.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: accounts-api
+  namespace: accounts
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: accounts-api } }
+  template:
+    metadata: { labels: { app: accounts-api } }
+    spec:
+      hostNetwork: true                                   # F1
+      containers:
+        - name: api
+          image: ghcr.io/example/accounts-api:latest      # F2
+          securityContext:
+            privileged: true                              # F3
+            runAsUser: 0                                  # F4
+          env:
+            - name: DB_PASSWORD
+              value: "hunter2-prod"                       # F5
+            - name: AWS_ACCESS_KEY_ID
+              value: "AKIAEXAMPLEEXAMPLE00"               # F6
+          volumeMounts:
+            - { name: host, mountPath: /host }
+          # F7: no resources
+      volumes:
+        - name: host
+          hostPath: { path: / }                           # F8
