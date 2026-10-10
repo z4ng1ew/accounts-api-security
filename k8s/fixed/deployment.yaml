@@ -24,13 +24,16 @@ spec:
             readOnlyRootFilesystem: true
             privileged: false
             capabilities: { drop: [ALL] }
-          envFrom:
-            - secretRef: { name: accounts-api-db }  # synced by External Secrets from Secrets Manager (T7)
+          env:
+            - { name: DB_CREDENTIALS_DIR, value: /var/run/secrets/db }   # files from External Secrets (k8s/secrets)
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { memory: 256Mi }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: db-creds, mountPath: /var/run/secrets/db, readOnly: true }
       volumes:
+        - name: db-creds
+          secret: { secretName: accounts-api-db, defaultMode: 0400 }
         - name: tmp
           emptyDir: { sizeLimit: 64Mi }
