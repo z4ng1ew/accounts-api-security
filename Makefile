@@ -12,7 +12,7 @@ policy-test:
 	kyverno test policies/kyverno/tests
 
 tf-validate:
-	cd terraform && terraform init -backend=false && terraform validate
+	cd terraform && $${TF:-tofu} init -backend=false && $${TF:-tofu} validate
 
 review-test:
 	kyverno test policies/kyverno/tests-review
