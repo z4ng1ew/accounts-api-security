@@ -1,4 +1,28 @@
-# Section 3: pipeline gates. Maps: T2 (Trivy), T3 (Gitleaks), T4 (waiver integrity), T7 (Checkov).
+# Section 3: pipeline gates. Required status checks on `main` (branch protection): all jobs
+# below except `sast`. Threat IDs refer to docs/THREAT_MODEL.md.
+#
+# TOOLS (one line each)
+#   SCA     Trivy  — one binary covers OS packages + language deps in the built image and lockfiles;
+#                    consolidating SCA+image scanning into one tool = one waiver format. Gave up: Grype's
+#                    slightly better matching on some ecosystems; reachability analysis (needs paid tooling).
+#   SAST    Semgrep (OSS rules) — fast, language-agnostic, no server. ADVISORY ONLY (see thresholds).
+#   Secrets Gitleaks — full git history, every PR + nightly. Not waivable.
+#   IaC     Checkov — Terraform + K8s manifests; covers IAM wildcards/KMS/ECR settings we care about (T7).
+#
+# SEVERITY THRESHOLDS (what blocks a merge, and why)
+#   Trivy:   blocks on CRITICAL/HIGH **with a fix available**. Unfixed findings can't be acted on by the
+#            developer; blocking on them makes the gate unpassable and it gets disabled. Unfixed = SBOM-tracked.
+#   Gitleaks: blocks on ANY finding. A live secret is always critical; the fix (rotate) is always possible.
+#   Checkov: blocks on failed checks in our pinned check list (HIGH/CRITICAL equivalents); others are soft-fail.
+#   Semgrep: never blocks. OSS default rules have high FP rate and nobody is staffed to triage.
+#
+# EXPECTED FALSE-POSITIVE LOAD AND WHAT WE TUNE FIRST
+#   Highest FP source: Semgrep (~dozens/week on first run) -> that's why it is advisory.
+#   Gitleaks: low but non-zero (test fixtures, example keys) -> tuned FIRST via .gitleaks.toml allowlist
+#     for test paths, because a noisy *blocking* gate is the one that gets bypassed.
+#   Trivy: moderate on base images -> mitigated by distroless + ignore-unfixed.
+#   Checkov: moderate on first run -> soft-fail everything except the pinned list, then promote checks.
+
 name: security-gates
 on:
   pull_request:
@@ -13,45 +37,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - run: pip install pyyaml pytest
       - run: pytest -q security/scripts
+      # Hard expiry + schema + approver rules. Exit 1 on any expired/invalid waiver -> build fails.
       - run: python security/scripts/check_waivers.py validate security/waivers/waivers.yaml
+      # Waiver file must be changed only by commits signed with a platform-team SSH key.
+      - run: bash security/scripts/verify_waiver_signatures.sh
 
-  secrets:            # T3 — blocking, NOT waivable
+  secrets:            # T3 — blocking, NOT waivable, FULL history
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
-        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        with: { fetch-depth: 0 }          # full clone; a shallow clone would only scan the tip
+      - name: Gitleaks over entire git history (all branches/commits reachable)
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
+          ./gitleaks git --log-opts="--all" --redact --exit-code 1 --report-path gitleaks.json .
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: gitleaks-report, path: gitleaks.json }
 
-  vulns:              # T2 — blocking on fixable CRITICAL/HIGH, waivable
+  sca:                # T2 — blocking on fixable CRITICAL/HIGH, waivable
     needs: waivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: pip install pyyaml
-      - name: Generate .trivyignore from approved waivers only
+      - name: Generate .trivyignore from approved, unexpired waivers only
         run: python security/scripts/check_waivers.py trivyignore security/waivers/waivers.yaml > .trivyignore
       - run: docker build -t accounts-api:${{ github.sha }} app/
       - uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: accounts-api:${{ github.sha }}
+          scanners: vuln
           severity: CRITICAL,HIGH
-          ignore-unfixed: true      # unfixable => nothing actionable; tracked via SBOM instead
+          ignore-unfixed: true
           trivyignores: .trivyignore
           exit-code: "1"
 
-  iac:                # T7 — Checkov on Terraform, blocking
+  iac:                # T7 — Checkov, blocking on pinned list
+    needs: waivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: bridgecrewio/checkov-action@v12
         with:
-          directory: terraform
+          directory: .
+          framework: terraform,kubernetes
           config_file: terraform/.checkov.yaml
 
-  policies:           # T5 — policy unit tests
+  policies:           # T1/T5 — admission policy unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,9 +95,11 @@ jobs:
           curl -sL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz | tar xz kyverno
           ./kyverno test policies/kyverno/tests
 
-  sast:               # advisory only (deliberately non-blocking, see DECISIONS.md D5)
+  sast:               # advisory only (not a required check)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - run: pipx run semgrep --config p/default --error app/ || true
+      - run: pipx run semgrep --config p/default --sarif -o semgrep.sarif app/ || true
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: semgrep.sarif }

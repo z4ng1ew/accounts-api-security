@@ -1,0 +1,4 @@
+# Platform team SSH signing keys. Changes require CODEOWNERS (@org/platform-team) and are
+# read from the BASE branch during verification, so a PR cannot add its own key.
+bob@example.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPLACEHOLDERbobPLACEHOLDERbobPLACEHOLDERb
+carol@example.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPLACEHOLDERcarolPLACEHOLDERcarolPLACEHO
