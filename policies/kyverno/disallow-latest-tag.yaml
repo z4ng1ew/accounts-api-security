@@ -3,7 +3,14 @@ apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata: { name: require-image-digest }
 spec:
-  validationFailureAction: Enforce
+  # ROLLOUT — day one: Audit cluster-wide; Enforce in labelled namespaces (accounts on day one)
+  # PROMOTION TO ENFORCE: Same label promotion (0 violations for 7 days). Teams fix by switching CD to digests, a one-line change in most pipelines.
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaces: ["*"]
+      namespaceSelector:
+        matchLabels: { policy.bank/enforce: "true" }
   background: true
   rules:
     - name: require-digest

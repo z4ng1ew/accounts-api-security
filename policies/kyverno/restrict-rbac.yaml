@@ -7,7 +7,14 @@ kind: ClusterPolicy
 metadata:
   name: restrict-rbac
 spec:
-  validationFailureAction: Enforce
+  # ROLLOUT — day one: Audit cluster-wide; Enforce in labelled namespaces (accounts on day one)
+  # PROMOTION TO ENFORCE: Same label promotion. ClusterRoles (no namespace) are platform-owned and enforced from day one via the platform namespace exclusion list, as they are managed only by the platform team.
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaces: ["*"]
+      namespaceSelector:
+        matchLabels: { policy.bank/enforce: "true" }
   background: true
   rules:
     - name: no-wildcard-verbs-or-resources

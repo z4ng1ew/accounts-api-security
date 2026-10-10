@@ -4,6 +4,10 @@ apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata: { name: verify-image-signature }
 spec:
+  # ROLLOUT — day one: ENFORCE, but matched only to namespace `accounts` (other teams' images are not
+  #   signed by this workflow, so a cluster-wide rule would break them).
+  # PROMOTION: other teams onboard by adding their own build-sign workflow + an attestor entry; then
+  #   their namespace is added to `match`. Goal: every namespace holding PII.
   validationFailureAction: Enforce
   webhookTimeoutSeconds: 15
   failurePolicy: Fail

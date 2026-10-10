@@ -1,0 +1,12 @@
+# Namespace labels are the promotion switch for Kyverno (policy.bank/enforce) and add Pod Security
+# Admission `restricted` as a second, independent layer: if Kyverno is down or misconfigured
+# (failurePolicy, webhook removed), the built-in PSA controller still rejects privileged/host pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: accounts
+  labels:
+    policy.bank/enforce: "true"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    egress.bank/kyc: "true"

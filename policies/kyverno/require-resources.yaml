@@ -3,7 +3,14 @@ apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata: { name: require-resources }
 spec:
-  validationFailureAction: Enforce
+  # ROLLOUT — day one: Audit cluster-wide; Enforce in labelled namespaces (accounts on day one)
+  # PROMOTION TO ENFORCE: Same label promotion. Lowest priority: availability, not a named threat; never blocks promotion of the others.
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaces: ["*"]
+      namespaceSelector:
+        matchLabels: { policy.bank/enforce: "true" }
   background: true
   rules:
     - name: memory-limit-and-cpu-request

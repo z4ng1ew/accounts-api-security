@@ -1,0 +1,154 @@
+# Section 5: egress for accounts-api — allow the KYC provider, deny everything else.  (T9, T7)
+#
+# LAYER CHOSEN: an explicit forward proxy (Squid) with a hostname allow-list, plus Kubernetes
+# NetworkPolicy so the proxy is the ONLY route out of the pod.
+#   Why not NetworkPolicy alone: it is L3/L4 — it can only allow IPs, and the KYC provider sits
+#     behind a CDN whose IPs change and are shared with thousands of other sites.
+#   Why not Cilium FQDN policy: would be the cleanest, but this cluster runs the AWS VPC CNI and
+#     swapping the CNI under 12 teams is a platform project, not a control for one service.
+#   Why not AWS Network Firewall at the NAT: right for the org, wrong scope here — it filters per VPC,
+#     so it can't say "only accounts-api may reach the KYC host". Recommended as a second layer later.
+# The proxy checks the CONNECT hostname and (with ssl_bump peek) the TLS SNI, and refuses mismatches.
+#
+# WHAT IT STILL FAILS TO STOP (honest list)
+#  1. Exfiltration TO the KYC provider: an attacker in the pod can POST customer data to the allowed
+#     host (e.g. into fields of KYC API calls, or using their own account at the same provider).
+#     Hostname filtering cannot see intent. Mitigation: KYC API key scoped to our tenant; volume
+#     anomaly alert on proxy logs (bytes out per hour).
+#  2. Domain fronting: if the KYC host is on a shared CDN that still honours a Host header different
+#     from SNI, traffic to an attacker's site on the same CDN looks allowed. We do NOT terminate TLS
+#     (that would put customer PII in clear on the proxy), so the Host header is not visible.
+#  3. DNS exfiltration: the pod may query kube-dns, which recurses to the internet. Data encoded in
+#     subdomains leaves. Mitigation: Route 53 Resolver DNS Firewall (allow-list) — not built.
+#  4. AWS APIs via VPC endpoints: allowed for STS/Secrets Manager; an attacker could use them with
+#     their OWN credentials to write data out (e.g. secrets in their account). Endpoint policies
+#     restricting to our account ID are the fix — noted, not built.
+#  5. A compromised proxy, or any pod that can label itself into the proxy's allowed ingress:
+#     the proxy namespace is platform-owned and its ingress allows only namespace `accounts`.
+#  6. Anything that bypasses the pod network: hostNetwork pods (blocked by admission, require-pod-security).
+---
+# 1) Pod-side: default deny, then only DNS, RDS, AWS endpoints, and the proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: accounts }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: accounts-api-egress, namespace: accounts }
+spec:
+  podSelector: { matchLabels: { app: accounts-api } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.0.64.0/20 } }]          # RDS subnets
+      ports: [{ port: 5432, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.0.96.0/24 } }]          # VPC interface endpoints: sts, secretsmanager
+      ports: [{ port: 443, protocol: TCP }]
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: egress } }, podSelector: { matchLabels: { app: egress-proxy } } }]
+      ports: [{ port: 3128, protocol: TCP }]
+    # NO rule to 0.0.0.0/0 — the internet is reachable only through the proxy. IMDS (169.254.169.254)
+    # is not listed, so it is denied too (and IMDSv2 hop limit = 1 on nodes).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: accounts-api-ingress, namespace: accounts }
+spec:
+  podSelector: { matchLabels: { app: accounts-api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 10.0.0.0/20 } }]          # ALB subnets (target-type ip)
+      ports: [{ port: 8080, protocol: TCP }]
+---
+# Quarantine (used by the Falco runbook): a labelled pod gets no traffic at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: quarantine, namespace: accounts }
+spec:
+  podSelector: { matchLabels: { quarantine: "true" } }
+  policyTypes: [Ingress, Egress]
+---
+# 2) Proxy side: platform-owned namespace; only `accounts` may connect; proxy may reach the internet on 443.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egress
+  labels: { policy.bank/enforce: "true", pod-security.kubernetes.io/enforce: restricted }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: egress-proxy, namespace: egress }
+spec:
+  podSelector: { matchLabels: { app: egress-proxy } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{ namespaceSelector: { matchLabels: { egress.bank/kyc: "true" } }, podSelector: { matchLabels: { app: accounts-api } } }]
+      ports: [{ port: 3128, protocol: TCP }]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16] } }]
+      ports: [{ port: 443, protocol: TCP }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: egress-proxy-config, namespace: egress }
+data:
+  squid.conf: |
+    http_port 3128 ssl-bump cert=/etc/squid/dummy.pem generate-host-certificates=off
+    # peek at the TLS ClientHello to read SNI, never decrypt (no PII on the proxy)
+    acl step1 at_step SslBump1
+    ssl_bump peek step1
+    acl kyc_sni ssl::server_name kyc-api.kyc-provider.example.com
+    ssl_bump splice kyc_sni
+    ssl_bump terminate all
+
+    acl kyc_host dstdomain kyc-api.kyc-provider.example.com
+    acl SSL_port port 443
+    acl CONNECT method CONNECT
+    http_access deny !SSL_port
+    http_access allow CONNECT kyc_host
+    http_access deny all                        # everything else, including plain HTTP
+
+    # one JSON-ish line per request -> Fluent Bit -> CloudWatch; feeds the bytes-out anomaly alert
+    logformat kyc %ts.%03tu client=%>a host=%ru sni=%ssl::>sni status=%>Hs bytes_out=%>st bytes_in=%<st
+    access_log stdio:/dev/stdout kyc
+    cache deny all
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: egress-proxy, namespace: egress }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: egress-proxy } }
+  template:
+    metadata: { labels: { app: egress-proxy } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 31, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: squid
+          image: public.ecr.aws/ubuntu/squid@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          ports: [{ containerPort: 3128 }]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/squid/squid.conf, subPath: squid.conf }
+            - { name: tmp, mountPath: /var/spool/squid }
+            - { name: run, mountPath: /run }
+      volumes:
+        - { name: conf, configMap: { name: egress-proxy-config } }
+        - { name: tmp, emptyDir: {} }
+        - { name: run, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: egress-proxy, namespace: egress }
+spec:
+  selector: { app: egress-proxy }
+  ports: [{ port: 3128, targetPort: 3128 }]
+# The app is configured with HTTPS_PROXY=http://egress-proxy.egress.svc.cluster.local:3128 and
+# NO_PROXY for the RDS and VPC-endpoint hostnames.

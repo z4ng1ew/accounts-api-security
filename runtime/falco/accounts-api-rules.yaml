@@ -1,31 +1,43 @@
-# Section 5 runtime detection. Detection only; prevention is admission (policies/).
-# AWS mapping: Falco ≈ GuardDuty EKS Runtime Monitoring; alerts → Falcosidekick → SNS/Slack.
+# Section 5: custom runtime detection for accounts-api (not from the default ruleset).
+# Engine: Falco (modern eBPF driver) as a DaemonSet in namespace `falco`.
+# AWS mapping: complements GuardDuty EKS Runtime Monitoring (generic) with workload-specific intent.
+#
+# WHY THIS RULE: accounts-api has an unusually small, known network profile:
+#   DNS, Postgres on RDS, the egress proxy (only route to the KYC provider), AWS STS/Secrets Manager
+#   VPC endpoints. Any other outbound connect() from this pod means one of:
+#   (a) RCE trying to exfiltrate customer data or reach C2,
+#   (b) an attacker probing for a way around the egress proxy (T9),
+#   (c) an attempt to reach IMDS for node credentials (T7),
+#   (d) a new dependency phoning home (supply chain, T2).
+# Falco sees the connect() syscall even when the NetworkPolicy then drops the packet, so this rule
+# fires on the ATTEMPT — the network control blocks it, the detection tells us someone tried.
+
+- list: accounts_api_allowed_ports
+  items: [53, 5432, 3128, 443]
 
 - macro: accounts_api_container
   condition: (k8s.ns.name = "accounts" and k8s.pod.label.app = "accounts-api")
 
-- rule: Shell spawned in accounts-api            # T5 / waiver WVR-0001 compensating control
-  desc: Distroless image has no shell; any shell means exploitation or kubectl exec.
-  condition: spawned_process and accounts_api_container and proc.name in (sh, bash, ash, dash)
-  output: "Shell in accounts-api (user=%user.name cmd=%proc.cmdline pod=%k8s.pod.name)"
-  priority: CRITICAL
-  tags: [T5]
+- macro: accounts_api_expected_destination
+  condition: >
+    (fd.snet in ("10.0.64.0/20") and fd.sport = 5432)                 or
+    (fd.sip.name = "egress-proxy.egress.svc.cluster.local" and fd.sport = 3128) or
+    (fd.snet in ("10.0.96.0/24") and fd.sport = 443)                  or
+    (fd.sport = 53 and fd.snet in ("172.20.0.0/16"))
+  # 10.0.64.0/20 = RDS subnets; 10.0.96.0/24 = VPC interface endpoints (sts, secretsmanager);
+  # 172.20.0.0/16 = cluster service CIDR (kube-dns). Assumed values; kept in one place on purpose.
 
-- rule: Unexpected process in accounts-api
-  desc: Only the python interpreter should ever run.
-  condition: spawned_process and accounts_api_container and not proc.name in (python, python3)
-  output: "Unexpected process %proc.name in accounts-api (pod=%k8s.pod.name)"
-  priority: WARNING
-  tags: [T2, T5]
-
-- rule: Service account token read by non-app process   # T7
-  condition: open_read and accounts_api_container and fd.name startswith /var/run/secrets and not proc.name in (python, python3)
-  output: "SA/IRSA token read by %proc.name (pod=%k8s.pod.name)"
+- rule: accounts-api unexpected outbound connection
+  desc: >
+    accounts-api opened a network connection to a destination outside its declared profile
+    (RDS, egress proxy, AWS VPC endpoints, DNS). Includes IMDS and direct internet attempts.
+  condition: >
+    outbound and accounts_api_container
+    and not accounts_api_expected_destination
+  output: >
+    accounts-api unexpected outbound connection
+    (dest=%fd.sip:%fd.sport dest_name=%fd.sip.name proc=%proc.name cmdline=%proc.cmdline
+     parent=%proc.pname user=%user.uid pod=%k8s.pod.name ns=%k8s.ns.name
+     image=%container.image.repository@%container.image.digest node=%evt.hostname)
   priority: CRITICAL
-  tags: [T7]
-
-- rule: IMDS access from accounts-api                   # T7: should use IRSA, never node role
-  condition: outbound and accounts_api_container and fd.sip = "169.254.169.254"
-  output: "accounts-api contacted IMDS (pod=%k8s.pod.name)"
-  priority: CRITICAL
-  tags: [T7]
+  tags: [accounts-api, network, T9, T7, T2, mitre_exfiltration, mitre_command_and_control]
