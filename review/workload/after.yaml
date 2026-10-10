@@ -1,0 +1,74 @@
+# Artefact (a) fixed. Test fixture: MUST PASS policies.
+#
+# DEFECTS, RANKED BY EXPLOITABILITY IN THIS ENVIRONMENT (shared EKS cluster, internet-facing API)
+# Attacker model: RCE in the api container (e.g. via a dependency CVE, threat T2).
+#
+#  1. hostPath /var/run/docker.sock  -> one `curl --unix-socket` = start a privileged container on
+#     the node = root on the node = every pod of all ~12 teams + node IAM role. `privileged: false`
+#     is irrelevant: the socket IS the escape. Zero further exploitation needed.            [T5]
+#  2. Role verbs "*" on secrets+pods  -> from the same RCE, the mounted SA token can read every
+#     Secret in `accounts` (DB creds, KYC key) and CREATE pods (with hostPath -> node root again,
+#     or pods/exec into replicas). Pure API calls, no exploit.                               [T5,T7]
+#  3. runAsUser: 0                     -> root in the container: makes (1) and (5) writable, enables
+#     package install/tooling, and turns any kernel/runtime CVE into a node escape.          [T5]
+#  4. hostNetwork: true                -> bypasses every NetworkPolicy (default-deny is void), reaches
+#     IMDS at 169.254.169.254 = node instance role creds, sees node-local ports (kubelet).  [T6,T7]
+#  5. hostPath /var/log (read-write)   -> reads every other team's container logs (their PII/tokens);
+#     writable + root enables the known kubelet /var/log symlink trick to read arbitrary node files. [T5,T8]
+#  6. image :latest                    -> mutable, not pinned, not verifiable: a re-pushed tag changes
+#     prod on the next pod restart with no deploy, no review, no signature check.           [T1]
+#  7. Missing hardening: no allowPrivilegeEscalation=false, writable root FS, caps not dropped, no
+#     seccomp, no resources (shared-cluster DoS), SA token automounted though app needs no K8s API.
+#  (envFrom of a whole Secret is acceptable here: keys come from External Secrets, scoped per app.)
+#
+# FIXES: remove (1)(4)(5) outright (app needs none of them; logs go to stdout -> Fluent Bit DaemonSet
+# owned by platform); non-root UID; digest pinning + signature (Kyverno verifyImages); app gets NO
+# Kubernetes API access — secrets arrive via External Secrets, so the Role is reduced to one
+# read-only configmap and the SA token is not mounted at all (IRSA uses its own projected token).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: accounts-api
+  namespace: accounts
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: accounts-api } }
+  template:
+    metadata: { labels: { app: accounts-api } }
+    spec:
+      serviceAccountName: accounts-api
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/accounts-api@sha256:4f2b9d0e3c1a8b7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2918070
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: accounts-api-env }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: accounts-api
+  namespace: accounts
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["accounts-api-config"]
+    verbs: ["get"]

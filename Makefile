@@ -1,6 +1,6 @@
 .PHONY: test policy-test py-test waivers tf-validate
 
-test: py-test waivers policy-test
+test: py-test waivers policy-test review-test
 
 py-test:
 	python -m pytest -q security/scripts app/logging
@@ -13,3 +13,9 @@ policy-test:
 
 tf-validate:
 	cd terraform && terraform init -backend=false && terraform validate
+
+review-test:
+	kyverno test policies/kyverno/tests-review
+	conftest verify -p policies/conftest/terraform
+	! conftest test --parser hcl2 -p policies/conftest/terraform review/terraform/before/main.tf
+	conftest test --parser hcl2 -p policies/conftest/terraform review/terraform/after/main.tf

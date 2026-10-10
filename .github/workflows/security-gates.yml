@@ -86,6 +86,11 @@ jobs:
           directory: .
           framework: terraform,kubernetes
           config_file: terraform/.checkov.yaml
+      - name: Conftest — pinned rules for defects that already reached prod (Section 4)
+        run: |
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz | tar xz conftest
+          ./conftest verify -p policies/conftest/terraform
+          ./conftest test --parser hcl2 -p policies/conftest/terraform terraform/*.tf review/terraform/after/*.tf
 
   policies:           # T1/T5 — admission policy unit tests
     runs-on: ubuntu-latest
@@ -94,6 +99,7 @@ jobs:
       - run: |
           curl -sL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz | tar xz kyverno
           ./kyverno test policies/kyverno/tests
+          ./kyverno test policies/kyverno/tests-review
 
   sast:               # advisory only (not a required check)
     runs-on: ubuntu-latest

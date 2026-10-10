@@ -1,0 +1,32 @@
+# Section 4(a): fixtures are the production artefact (before.yaml) and its fix (after.yaml).
+# Every defect has a rule that FAILS on before and PASSES on after.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata: { name: review-workload }
+policies:
+  - ../require-pod-security.yaml
+  - ../disallow-latest-tag.yaml
+  - ../require-resources.yaml
+  - ../restrict-rbac.yaml
+resources:
+  - ../../../review/workload/before.yaml
+  - ../../../review/workload/after.yaml
+results:
+  - { policy: require-pod-security, rule: autogen-run-as-non-root, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-pod-security, rule: autogen-run-as-non-root, kind: Deployment, resources: [accounts-api], result: pass }
+  - { policy: require-pod-security, rule: autogen-no-host-namespaces, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-pod-security, rule: autogen-no-host-namespaces, kind: Deployment, resources: [accounts-api], result: pass }
+  - { policy: require-pod-security, rule: autogen-no-hostpath, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-pod-security, rule: autogen-no-hostpath, kind: Deployment, resources: [accounts-api], result: pass }
+  - { policy: require-pod-security, rule: autogen-no-privilege-escalation-readonly-root, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-pod-security, rule: autogen-no-privilege-escalation-readonly-root, kind: Deployment, resources: [accounts-api], result: pass }
+  - { policy: require-image-digest, rule: autogen-require-digest, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-image-digest, rule: autogen-require-digest, kind: Deployment, resources: [accounts-api], result: pass }
+  - { policy: require-resources, rule: autogen-memory-limit-and-cpu-request, kind: Deployment, resources: [accounts-api-before], result: fail }
+  - { policy: require-resources, rule: autogen-memory-limit-and-cpu-request, kind: Deployment, resources: [accounts-api], result: pass }
+  # privileged: false was already correct in production -> passes in both
+  - { policy: require-pod-security, rule: autogen-no-privileged, kind: Deployment, resources: [accounts-api-before, accounts-api], result: pass }
+  - { policy: restrict-rbac, rule: no-wildcard-verbs-or-resources, kind: Role, resources: [accounts-api-before], result: fail }
+  - { policy: restrict-rbac, rule: no-wildcard-verbs-or-resources, kind: Role, resources: [accounts-api], result: pass }
+  - { policy: restrict-rbac, rule: no-secret-access-or-pod-creation, kind: Role, resources: [accounts-api-before], result: fail }
+  - { policy: restrict-rbac, rule: no-secret-access-or-pod-creation, kind: Role, resources: [accounts-api], result: pass }

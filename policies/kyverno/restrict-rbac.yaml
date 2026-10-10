@@ -1,0 +1,37 @@
+# Prevents recurrence of defect (2): app Roles with wildcard verbs, or any access to Secrets / pod
+# creation / exec. Secrets reach apps only via External Secrets (platform-owned controller SA).
+# Exceptions (e.g. an operator that truly needs it) go through a Kyverno PolicyException,
+# CODEOWNERS-reviewed, same rules as security/waivers.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-rbac
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: no-wildcard-verbs-or-resources
+      match: { any: [{ resources: { kinds: [Role, ClusterRole] } }] }
+      validate:
+        message: "RBAC rules must not use '*' in verbs, resources or apiGroups (T5)."
+        deny:
+          conditions:
+            any:
+              # "*" as a Kyverno operand is itself a wildcard, so compare via JMESPath contains()
+              - { key: "{{ contains(request.object.rules[].verbs[] || `[]`, '*') }}", operator: Equals, value: true }
+              - { key: "{{ contains(request.object.rules[].resources[] || `[]`, '*') }}", operator: Equals, value: true }
+              - { key: "{{ contains(request.object.rules[].apiGroups[] || `[]`, '*') }}", operator: Equals, value: true }
+    - name: no-secret-access-or-pod-creation
+      match: { any: [{ resources: { kinds: [Role] } }] }
+      validate:
+        message: "App Roles must not grant access to secrets, or create/exec on pods (T5/T7)."
+        foreach:
+          - list: "request.object.rules"
+            deny:
+              conditions:
+                any:
+                  - { key: "secrets", operator: AnyIn, value: "{{ element.resources || `[]` }}" }
+                  - key: "{{ contains(element.resources || `[]`, 'pods') && length(intersection(element.verbs || `[]`, ['create','update','patch','*'])) > `0` }}"
+                    operator: Equals
+                    value: true
+                  - { key: "pods/exec", operator: AnyIn, value: "{{ element.resources || `[]` }}" }

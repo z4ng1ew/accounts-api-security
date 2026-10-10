@@ -15,7 +15,7 @@ import yaml
 
 REQUIRED = ["id", "scanner", "target", "severity", "reason", "compensating_control",
             "threat", "requested_by", "approved_by", "created", "expires", "ticket"]
-WAIVABLE_SCANNERS = {"trivy", "checkov", "kyverno"}
+WAIVABLE_SCANNERS = {"trivy", "checkov", "kyverno", "conftest"}
 APPROVERS = {"bob", "carol"}          # platform team; mirrors CODEOWNERS
 MAX_DAYS = {"CRITICAL": 30, "HIGH": 90, "MEDIUM": 90, "LOW": 90}
 
